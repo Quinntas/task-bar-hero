@@ -3,24 +3,24 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
-using System.Windows.Media;
 using System.Windows.Threading;
 using TaskbarHeroOverlay.Game.Core;
-using TaskbarHeroOverlay.Game.Entities.Characters.Hero;
 using TaskbarHeroOverlay.Game.Rendering;
 using TaskbarHeroOverlay.Game.Scenes.DesktopOverlay;
 using TaskbarHeroOverlay.Game.Systems.Characters;
 using TaskbarHeroOverlay.Game.Systems.Layout;
-using TaskbarHeroOverlay.Interop;
 using TaskbarHeroOverlay.Config;
+using TaskbarHeroOverlay.UI.Editing;
+using TaskbarHeroOverlay.UI.Rendering;
 
 namespace TaskbarHeroOverlay.UI.Windows;
 
 public partial class GameWindow : Window
 {
+    private readonly GameWindowEditor _editor;
+    private readonly DesktopOverlaySceneRenderer _sceneRenderer;
     private readonly DispatcherTimer _timer;
     private readonly DesktopOverlaySceneState _sceneState = new();
-    private IntPtr _handle;
 
     public bool IsEditMode { get; private set; }
     public event EventHandler<bool>? EditModeChanged;
@@ -28,6 +28,8 @@ public partial class GameWindow : Window
     public GameWindow()
     {
         InitializeComponent();
+        _editor = new GameWindowEditor(this, EditorChrome, ApplyLayout);
+        _sceneRenderer = new DesktopOverlaySceneRenderer(OverlayCanvas, Hero);
         ApplyWindowConfiguration();
 
         SourceInitialized += OnSourceInitialized;
@@ -52,7 +54,7 @@ public partial class GameWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         CenterOnPrimaryScreen();
-        RenderScene();
+        RenderCurrentScene();
     }
 
     public void ApplyLayout(double left, double top, double width, double height)
@@ -73,10 +75,10 @@ public partial class GameWindow : Window
         }
 
         IsEditMode = isEditMode;
-        EditorChrome.Visibility = isEditMode ? Visibility.Visible : Visibility.Collapsed;
-        EditorChrome.IsHitTestVisible = isEditMode;
-        UpdateWindowInteractivity();
-        EditModeChanged?.Invoke(this, IsEditMode);
+        if (_editor.SetEditMode(isEditMode))
+        {
+            EditModeChanged?.Invoke(this, IsEditMode);
+        }
     }
 
     public void CenterOnPrimaryScreen()
@@ -87,146 +89,77 @@ public partial class GameWindow : Window
 
     private void UpdateOverlaySize()
     {
-        OverlayCanvas.Width = Width;
-        OverlayCanvas.Height = Height;
-        RenderScene();
+        _sceneRenderer.ResizeViewport(Width, Height);
+        RenderCurrentScene();
     }
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (OverlayCanvas.ActualWidth <= 0)
+        if (_sceneRenderer.SceneWidth <= 0)
         {
             return;
         }
 
-        HeroMotionSystem.Update(_sceneState.Hero, _timer.Interval.TotalSeconds, OverlayCanvas.ActualWidth, Hero.ActualWidth);
-        RenderScene();
+        HeroMotionSystem.Update(_sceneState.Hero, _timer.Interval.TotalSeconds, _sceneRenderer.SceneWidth, _sceneRenderer.HeroWidth);
+        RenderCurrentScene();
     }
 
-    private void RenderScene()
+    private void RenderCurrentScene()
     {
-        if (OverlayCanvas.ActualHeight <= 0)
-        {
-            return;
-        }
-
-        Canvas.SetLeft(Hero, _sceneState.Hero.X);
-
-        var top = Math.Max(0, OverlayCanvas.ActualHeight - Hero.ActualHeight - HeroMotionConfig.GroundMargin);
-        Canvas.SetTop(Hero, top);
-        Hero.RenderTransform = new ScaleTransform(_sceneState.Hero.Direction, 1, Hero.ActualWidth / 2, Hero.ActualHeight / 2);
+        _sceneRenderer.Render(_sceneState);
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
-        _handle = new WindowInteropHelper(this).Handle;
-        UpdateWindowInteractivity();
-    }
-
-    private void UpdateWindowInteractivity()
-    {
-        if (_handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        var extendedStyle = NativeMethods.GetWindowLongPtr(_handle, NativeWindowConfig.GwlExstyle).ToInt64();
-        extendedStyle |= NativeWindowConfig.WsExLayered | NativeWindowConfig.WsExToolwindow;
-
-        if (IsEditMode)
-        {
-            extendedStyle &= ~NativeWindowConfig.WsExTransparent;
-        }
-        else
-        {
-            extendedStyle |= NativeWindowConfig.WsExTransparent;
-        }
-
-        NativeMethods.SetWindowLongPtr(_handle, NativeWindowConfig.GwlExstyle, new IntPtr(extendedStyle));
-        NativeMethods.SetWindowPos(
-            _handle,
-            IntPtr.Zero,
-            0,
-            0,
-            0,
-            0,
-            NativeWindowConfig.SwpNomove
-            | NativeWindowConfig.SwpNosize
-            | NativeWindowConfig.SwpNozorder
-            | NativeWindowConfig.SwpNoactivate
-            | NativeWindowConfig.SwpFramechanged);
+        _editor.InitializeHandle(new WindowInteropHelper(this).Handle);
     }
 
     private void MoveThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ApplyLayout(Left + e.HorizontalChange, Top + e.VerticalChange, Width, Height);
+        _editor.Move(e.HorizontalChange, e.VerticalChange);
     }
 
     private void TopLeftThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeLeft(e.HorizontalChange);
-        ResizeTop(e.VerticalChange);
+        _editor.ResizeLeft(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
+        _editor.ResizeTop(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 
     private void TopThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeTop(e.VerticalChange);
+        _editor.ResizeTop(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 
     private void TopRightThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeRight(e.HorizontalChange);
-        ResizeTop(e.VerticalChange);
+        _editor.ResizeRight(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
+        _editor.ResizeTop(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 
     private void LeftThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeLeft(e.HorizontalChange);
+        _editor.ResizeLeft(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
     }
 
     private void RightThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeRight(e.HorizontalChange);
+        _editor.ResizeRight(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
     }
 
     private void BottomLeftThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeLeft(e.HorizontalChange);
-        ResizeBottom(e.VerticalChange);
+        _editor.ResizeLeft(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
+        _editor.ResizeBottom(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 
     private void BottomThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeBottom(e.VerticalChange);
+        _editor.ResizeBottom(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 
     private void BottomRightThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
     {
-        ResizeRight(e.HorizontalChange);
-        ResizeBottom(e.VerticalChange);
-    }
-
-    private void ResizeLeft(double delta)
-    {
-        var newWidth = Math.Max(DesktopOverlaySceneConfig.MinimumWidth, Width - delta);
-        var newLeft = Left + (Width - newWidth);
-        ApplyLayout(newLeft, Top, newWidth, Height);
-    }
-
-    private void ResizeRight(double delta)
-    {
-        ApplyLayout(Left, Top, Math.Max(DesktopOverlaySceneConfig.MinimumWidth, Width + delta), Height);
-    }
-
-    private void ResizeTop(double delta)
-    {
-        var newHeight = Math.Max(DesktopOverlaySceneConfig.MinimumHeight, Height - delta);
-        var newTop = Top + (Height - newHeight);
-        ApplyLayout(Left, newTop, Width, newHeight);
-    }
-
-    private void ResizeBottom(double delta)
-    {
-        ApplyLayout(Left, Top, Width, Math.Max(DesktopOverlaySceneConfig.MinimumHeight, Height + delta));
+        _editor.ResizeRight(e.HorizontalChange, DesktopOverlaySceneConfig.MinimumWidth);
+        _editor.ResizeBottom(e.VerticalChange, DesktopOverlaySceneConfig.MinimumHeight);
     }
 }
