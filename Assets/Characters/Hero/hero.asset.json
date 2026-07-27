@@ -1,0 +1,6 @@
+{
+  "id": "hero",
+  "displayName": "Taskbar Hero",
+  "spriteSheet": "hero.sprite-sheet.png",
+  "animations": "hero.animations.json"
+}
